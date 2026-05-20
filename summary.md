@@ -1,481 +1,330 @@
-## 1. 연구 주제명
+# Two-Stage Sparse von Mises-Fisher Mixture Models for Clustering L2-Normalized Text Embeddings
 
-**Summary-Regularized Gaussian Mixture Models for Interpretable Text Clustering**
-
-- **약칭:** SR-GMM
-    
-- **추정 알고리즘:** SR-EM (Summary-Regularized EM)
-    
-
-**핵심 아이디어는 다음이다.**
-
-Text $\to$ LLM embedding $\to$ Gaussian mixture clustering $\to$ summary prototype $\to$ summary-regularized EM $\to$ interpretable clusters.
-
-기존 Summaries as Centroids는 k-means의 numeric centroid를 textual summary embedding으로 주기적으로 대체하는 방식이다. 즉 hard assignment와 k-means objective를 유지하면서 centroid만 summary-derived centroid로 바꾼다. 본 연구는 이를 GMM으로 단순 확장하는 것이 아니라, summary embedding을 Gaussian mixture component mean에 대한 Mahalanobis regularization target으로 넣는다.
+**연구 미팅 자료 (최종)**
 
 ---
 
-## 2. 기존 연구와의 차별점
+## 1. 핵심 아이디어
 
-- **기존 summary-as-centroid 방식:**
-    
-    $$ \mu_j \leftarrow \phi\{f(S_j)\} $$
-    
-    즉, cluster $j$에 속한 문서들을 요약하고, 그 요약문을 다시 embedding하여 centroid로 직접 사용한다.
-    
-- **제안 방법:**
-    
-    $\mu_j$를 $c_j = \phi{f(S_j)}$로 완전히 대체하지 않고, $\mu_j$가 data-driven mean과 summary prototype 사이의 compromise가 되도록 추정한다.
-    
+L2 정규화된 텍스트 임베딩을 단위 초구면 위의 방향성 자료로 보고, $L_1$-penalized vMF mixture로 군집 판별 좌표를 선택한 뒤, **원래 sphere $S^{d-1}$ 위의 sparse-vMF submodel**에서 unpenalized refit을 수행한다.
 
-즉, 제안법은 다음을 연결하는 one-parameter family이다.
+### 1.1 파이프라인
 
-- $\rho = 0 \implies$ standard GMM
-    
-- $0 < \rho < \infty \implies$ summary-regularized GMM
-    
-- $\rho \to \infty \implies$ summary-replacement GMM analogue
-    
+$$d_i \xrightarrow{\phi(\cdot)} \mathbf{x}_i \in \mathbb{R}^d \xrightarrow{L_2\text{-norm}} \mathbf{z}_i = \frac{\mathbf{x}_i}{\|\mathbf{x}_i\|_2} \in S^{d-1}$$
 
-여기서 $\rho \to \infty$의 극한은 k-LLMmeans와 유사하지만 동일하지 않다. k-LLMmeans는 hard assignment와 k-means objective를 쓰는 반면, SR-GMM은 soft responsibility와 Gaussian likelihood를 유지한다.
+$$\text{Stage 1: } \hat{S}_\lambda \leftarrow L_1\text{-penalized vMF mixture}$$
+
+$$\text{Stage 2: } \hat{\Theta}_{\hat{S}}^{\text{refit}} \leftarrow \text{unpenalized sparse-vMF submodel on original } S^{d-1}$$
+
+### 1.2 Novelty
+
+- "Sparse vMF mixture 자체"가 아님 (Rossi & Barbaro 등 선행 존재)
+- **Meynet식 Lasso-MLE 원칙을 sparse directional mixture로 확장**
+- **원래 sphere 위의 sparse-vMF submodel refit 정식화** — 모든 $(K, \lambda)$ 모델이 같은 sample space 위에서 정의되어 BIC/ICL을 통한 nested likelihood 비교 가능
 
 ---
 
-## 3. 데이터와 embedding
+## 2. vMF 혼합모형
 
-문서 집합을 $D = \{d_1, \dots, d_n\}$ 라고 둔다. 고정된 text encoder 또는 LLM embedding model을 $\phi: \mathcal{T} \to \mathbb{R}^p$ 라고 하면,
+### 2.1 vMF density
 
-$$ x_i = \phi(d_i) \in \mathbb{R}^p $$
+$$f(\mathbf{z} \mid \mu, \kappa) = c_d(\kappa) \exp(\kappa \mu^\top \mathbf{z}), \quad \mathbf{z}, \mu \in S^{d-1}, \; \kappa \geq 0$$
 
-모형은 embedding space에서 정의한다.
+$$c_d(\kappa) = \frac{\kappa^{d/2-1}}{(2\pi)^{d/2} I_{d/2-1}(\kappa)}$$
 
-$$ X = (x_1, \dots, x_n)^\top \in \mathbb{R}^{n \times p} $$
+### 2.2 Mixture
 
-실제 구현에서는 필요하면 PCA 또는 whitening을 쓸 수 있다.
+$$p(\mathbf{z}_i \mid \Theta) = \sum_{h=1}^K \pi_h c_d(\kappa_h) \exp(\kappa_h \mu_h^\top \mathbf{z}_i)$$
 
-$$ x_i = U_q^\top (x_i - \bar{x}) $$
+**제약**:
+$$\sum_{h=1}^K \pi_h = 1, \quad \|\mu_h\|_2 = 1, \quad 0 \leq \kappa_h \leq \kappa_{\max}$$
 
-또는
+### 2.3 Natural parameter
 
-$$ x_i = \Lambda_q^{-1/2} U_q^\top (x_i - \bar{x}) $$
+$$\eta_h = \kappa_h \mu_h, \quad f(\mathbf{z}_i \mid \eta_h) = c_d(\|\eta_h\|_2) \exp(\eta_h^\top \mathbf{z}_i)$$
 
-단, PCA/whitening은 방법론 contribution이 아니라 numerical preprocessing으로 둔다.
-
----
-
-## 4. 기본 Gaussian mixture model
-
-전처리 후의 embedding을 다시 $x_i$라고 쓰면,
-
-$$ x_i \stackrel{\text{iid}}{\sim} \sum_{j=1}^k \pi_j \mathcal{N}_p(\mu_j, \Sigma_j), \quad i=1, \dots, n $$
-
-여기서 $\pi_j > 0$, $\sum_{j=1}^k \pi_j = 1$, $\mu_j \in \mathbb{R}^p$, $\Sigma_j \in \mathbb{S}_{++}^p$.
-
-모수는 $\theta = (\pi, \mu, \Sigma)$.
-
-Incomplete log-likelihood는 다음과 같다.
-
-$$ \ell_n(\theta) = \sum_{i=1}^n \log \left[ \sum_{j=1}^k \pi_j \varphi(x_i; \mu_j, \Sigma_j) \right] $$
-
-> **참고:** Miller and Alexander의 short-text clustering 논문도 LLM embedding을 만든 뒤 GMM으로 embedding space에서 cluster를 찾고, human reviewer 및 generative LLM으로 interpretability를 평가했다. 따라서 단순 “LLM embedding + GMM + LLM 해석”은 이미 가까운 선행연구가 있다.
+$$p(\mathbf{z}_i \mid \pi, \eta) = \sum_{h=1}^K \pi_h c_d(\|\eta_h\|_2) \exp(\eta_h^\top \mathbf{z}_i)$$
 
 ---
 
-## 5. Summary prototype
+## 3. Stage 1: Penalized vMF Mixture
 
-각 component $j$에 대해 summary input set을 만든다.
+### 3.1 Option B (Main): Natural Parameter Penalty
 
-$$ S_j^{(t)} = \text{documents selected from } \{(d_i, \gamma_{ij}^{(t)})\}_{i=1}^n $$
+**가중 평균** (algorithm 안정성을 위해 fixed weight로 처리):
 
-Summarization operator를 $f: \mathcal{P}_{\text{fin}}(\mathcal{T}) \to \mathcal{T}$ 라고 두면,
+$$\bar{\eta}_j = \sum_{h=1}^K w_h \eta_{hj}, \quad w_h = \pi_h^{(t)} \text{ 또는 } N_h^{(t)}/n$$
 
-$$ s_j^{(t)} = f(S_j^{(t)}) $$
+**Penalty**:
 
-이고, summary embedding은
+$$P_B(\eta) = \sum_{j=1}^d \left[\sum_{h=1}^K w_h (\eta_{hj} - \bar{\eta}_j)^2\right]^{1/2}$$
 
-$$ c_j^{(t+1)} = \phi(s_j^{(t)}) $$
+**Penalized log-likelihood**:
 
-PCA/whitening을 사용한 경우에는 같은 transform을 summary embedding에도 적용한다.
+$$\mathcal{L}_{\lambda_n}^B(\pi, \eta) = \ell_n(\pi, \eta) - n \lambda_n P_B(\eta)$$
 
-$$ c_j^{(t+1)} = P_q W\{\phi(s_j^{(t)}) - \bar{x}\} $$
+$$\ell_n(\pi, \eta) = \sum_{i=1}^n \log \left[\sum_{h=1}^K \pi_h c_d(\|\eta_h\|_2) \exp(\eta_h^\top \mathbf{z}_i)\right]$$
 
-이때 $c_j^{(t+1)}$는 component $j$의 semantic prototype이다.
+### 3.2 Option A (Ablation): Mean Direction Penalty
 
----
+$$\bar{\mu}_j = \sum_{h=1}^K w_h \mu_{hj}$$
 
-## 6. 핵심 목적함수
+$$P_A(\mu) = \sum_{j=1}^d \left[\sum_{h=1}^K w_h (\mu_{hj} - \bar{\mu}_j)^2\right]^{1/2}$$
 
-제안하는 summary-regularized log-likelihood는
+### 3.3 두 옵션의 통계적 의미 차이
 
-$$ Q_\rho(\theta; c) = \ell_n(\theta) - \frac{\rho}{2} \sum_{j=1}^k (\mu_j - c_j)^\top \Sigma_j^{-1} (\mu_j - c_j) $$
+vMF log-density의 선형 판별항은:
 
-여기서 $\rho \ge 0$는 summary regularization strength이다.
+$$\eta_h^\top \mathbf{z}_i = \kappa_h \mu_h^\top \mathbf{z}_i$$
 
-**각 항의 의미:**
+- **Option B**: $\eta_{hj} = \kappa_h \mu_{hj}$가 component별로 같은 차원은 판별에 기여하지 않음 → $\kappa_h$ 차이 자동 반영
+- **Option A**: $\mu_{1j} = \cdots = \mu_{Kj}$여도 $\kappa_h \mu_{hj}$가 다르면 판별 정보가 남을 수 있어 부정확할 수 있음
 
-- $\ell_n(\theta)$: embedding data의 GMM likelihood
-    
-- $\frac{\rho}{2} (\mu_j - c_j)^\top \Sigma_j^{-1} (\mu_j - c_j)$: component mean과 summary prototype의 Mahalanobis discrepancy.
-    
+→ **Option B를 main으로**, Option A는 ablation.
 
-따라서,
+### 3.4 E-step (Option B 기준)
 
-$$ \hat{\theta}^{(c)} = \arg\max_\theta Q_\rho(\theta; c) $$
+$$\tau_{ih} = \frac{\pi_h c_d(\|\eta_h\|_2) \exp(\eta_h^\top \mathbf{z}_i)}{\sum_{\ell=1}^K \pi_\ell c_d(\|\eta_\ell\|_2) \exp(\eta_\ell^\top \mathbf{z}_i)}, \quad N_h = \sum_{i=1}^n \tau_{ih}$$
 
-Mahalanobis 형태를 쓰는 이유는 단순 미관이 아니라 계산적으로 중요하다. Euclidean ridge를 쓰면 $\mu_j$ update에서 $N_j^{(t)} \Sigma_j^{-1} + \rho I_p$의 $p \times p$ inverse가 필요하지만, Mahalanobis penalty를 쓰면 $\Sigma_j^{-1}$가 gradient에서 소거되어 scalar-weighted convex combination이 된다. 현재 methodology draft에서도 이 점을 핵심 장점으로 정리하고 있다.
+### 3.5 M-step
 
----
+> Cluster-contrast group penalty와 mixture likelihood 결합으로 **closed-form 부재**.
+> ECM / MM / proximal-gradient 기반 **generalized EM**으로 구현.
 
-## 7. Empirical Bayes 해석
+**Option B의 이점**: $\eta_h \in \mathbb{R}^d$가 단위 노름 제약 없음 → manifold optimization 불필요. $\|\eta_h\|_2 \leq \kappa_{\max}$ 제약만 유지.
 
-Penalty 항은 $-\frac{\rho}{2} (\mu_j - c_j)^\top \Sigma_j^{-1} (\mu_j - c_j)$ 이고, 이는 $\mu_j \mid \Sigma_j \sim \mathcal{N}(c_j, \Sigma_j / \rho)$의 quadratic kernel에 해당한다.
+### 3.6 Degeneracy Safeguard
 
-다만 proper normal prior density에는 $-\frac{1}{2} \log |\Sigma_j|$ 항이 추가로 포함된다. 현재 objective에는 이 log-determinant prior term이 없으므로, **full posterior equivalence가 아니라, conjugate normal location prior의 quadratic kernel로 해석한다.**
+$$\|\eta_h\|_2 \leq \kappa_{\max}, \quad N_h \geq N_{\min}$$
 
-따라서 $\rho$는 전체 모수에 대한 uniform prior sample size가 아니라, **location-anchor precision**으로 해석하는 것이 안전하다.
+$\|\eta_h\|_2 < \epsilon$인 component는 uniform/degenerate component로 처리.
 
----
+### 3.7 Active Set
 
-## 8. SR-EM 추정 알고리즘
+**Option B (main)**:
+$$\hat{S}_\lambda = \left\{j : \left[\sum_{h=1}^K w_h (\hat{\eta}_{hj} - \hat{\bar{\eta}}_j)^2\right]^{1/2} > \epsilon\right\}$$
 
-### 8.1 E-step
-
-현재 모수 $\theta^{(t)} = (\pi^{(t)}, \mu^{(t)}, \Sigma^{(t)})$에서 posterior responsibility를 계산한다.
-
-$$ \gamma_{ij}^{(t)} = \frac{\pi_j^{(t)} \varphi(x_i; \mu_j^{(t)}, \Sigma_j^{(t)})}{\sum_{\ell=1}^k \pi_\ell^{(t)} \varphi(x_i; \mu_\ell^{(t)}, \Sigma_\ell^{(t)})} $$
-
-- **Effective cluster size:** $N_j^{(t)} = \sum_{i=1}^n \gamma_{ij}^{(t)}$
-    
-- **Weighted mean:** $\bar{x}_j^{(t)} = \frac{1}{N_j^{(t)}} \sum_{i=1}^n \gamma_{ij}^{(t)} x_i$
-    
-
-### 8.2 Prototype refresh step
-
-Summary period를 $L$이라 두고, $L = \{t : t \equiv 0 \pmod L\}$.
-
-만약 $t+1 \in L$ 이면 prototype을 갱신한다.
-
-$$ s_j^{(t)} = f(S_j^{(t)}), \quad c_j^{(t+1)} = \phi(s_j^{(t)}) $$
-
-그렇지 않으면,
-
-$$ c_j^{(t+1)} = c_j^{(t)} $$
-
-### 8.3 M-step: mean update
-
-Penalized expected complete log-likelihood에서 $\mu_j$에 대해 미분한다.
-
-$$ \frac{\partial}{\partial \mu_j} \left[ \sum_{i=1}^n \gamma_{ij}^{(t)} (x_i - \mu_j)^\top \Sigma_j^{-1} (x_i - \mu_j) + \rho(\mu_j - c_j^{(t+1)})^\top \Sigma_j^{-1} (\mu_j - c_j^{(t+1)}) \right] = 0 $$
-
-따라서,
-
-$$ \Sigma_j^{-1} \left[ \sum_{i=1}^n \gamma_{ij}^{(t)} (x_i - \mu_j) - \rho(\mu_j - c_j^{(t+1)}) \right] = 0 $$
-
-정리하면 $N_j^{(t)} \bar{x}_j^{(t)} - N_j^{(t)} \mu_j - \rho \mu_j + \rho c_j^{(t+1)} = 0$.
-
-따라서 closed-form update는
-
-$$ \mu_j^{(t+1)} = \frac{N_j^{(t)} \bar{x}_j^{(t)} + \rho c_j^{(t+1)}}{N_j^{(t)} + \rho} $$
-
-또는
-
-$$ \mu_j^{(t+1)} = \left(\frac{N_j^{(t)}}{N_j^{(t)} + \rho}\right) \bar{x}_j^{(t)} + \left(\frac{\rho}{N_j^{(t)} + \rho}\right) c_j^{(t+1)} $$
-
-**해석:**
-
-$\mu_j^{(t+1)} =$ data-driven posterior mean + semantic summary prototype shrinkage.
-
-**극한:**
-
-- $\rho = 0 \implies \mu_j^{(t+1)} = \bar{x}_j^{(t)}$
-    
-- $\rho \to \infty \implies \mu_j^{(t+1)} \to c_j^{(t+1)}$
-    
-
-### 8.4 M-step: covariance update
-
-$$ \Sigma_j^{(t+1)} = \frac{1}{N_j^{(t)}} \left[ \sum_{i=1}^n \gamma_{ij}^{(t)} (x_i - \mu_j^{(t+1)})(x_i - \mu_j^{(t+1)})^\top + \rho(\mu_j^{(t+1)} - c_j^{(t+1)})(\mu_j^{(t+1)} - c_j^{(t+1)})^\top \right] $$
-
-- **첫 번째 항:** $S_j^{(t+1)} = \sum_{i=1}^n \gamma_{ij}^{(t)} (x_i - \mu_j^{(t+1)})(x_i - \mu_j^{(t+1)})^\top$
-    
-- **두 번째 항:** $A_j^{(t+1)} = (\mu_j^{(t+1)} - c_j^{(t+1)})(\mu_j^{(t+1)} - c_j^{(t+1)})^\top$
-    
-
-따라서,
-
-$$ \Sigma_j^{(t+1)} = \frac{S_j^{(t+1)} + \rho A_j^{(t+1)}}{N_j^{(t)}} $$
-
-**중요한 해석:**
-
-$\rho$는 $\mu_j$ update에서는 semantic precision처럼 작동한다. 하지만 $\Sigma_j$ update에서는 denominator가 $N_j + \rho$가 아니라 $N_j$이다.
-
-즉, $\rho$는 covariance에 대해 prior sample size처럼 작동하는 것이 아니라, **summary prototype과 data-driven mean 사이의 disagreement scatter를 추가한다.**
-
-> 수치 검증에서는 $\mu$와 $\Sigma$의 closed-form update가 각각 수치 최적화 결과와 매우 작은 오차로 일치했다. 검증 보고서에 따르면 $\mu$ update의 최대 오차는 $2.31 \times 10^{-7}$, $\Sigma$ update의 최대 오차는 $1.38 \times 10^{-8}$이다.
-
-### 8.5 M-step: mixing proportion update
-
-Penalty는 $\pi_j$에 의존하지 않으므로 표준 GMM과 동일하다.
-
-$$ \pi_j^{(t+1)} = \frac{N_j^{(t)}}{n} $$
+**Option A (ablation)**:
+$$\hat{S}_\lambda^A = \left\{j : \left[\sum_{h=1}^K w_h (\hat{\mu}_{hj} - \hat{\bar{\mu}}_j)^2\right]^{1/2} > \epsilon\right\}$$
 
 ---
 
-## 9. Restricted covariance structures
+## 4. Stage 2: Sparse-vMF Submodel Refit on Original Sphere
 
-고차원 embedding에서는 unrestricted covariance가 불안정할 수 있으므로 다음 covariance family를 고려한다.
+### 4.1 Main: Sparse-Submodel Refit
 
-- $(C_S)$: $\Sigma_j = \sigma_j^2 I_p$
-    
-- $(C_D)$: $\Sigma_j = \text{diag}(\sigma_{j1}^2, \dots, \sigma_{jp}^2)$
-    
-- $(C_E)$: $\Sigma_j = \Sigma$
-    
-- $(C_U)$: $\Sigma_j$ unrestricted
-    
+**핵심**: 데이터 $\mathbf{z}_i$는 $S^{d-1}$ 위에 그대로 둠. 비활성 좌표에서 mean direction을 0으로 강제.
 
-자유도는 예를 들어 다음과 같다.
+$$\mu_{h, \hat{S}^c} = \mathbf{0}, \quad \|\mu_{h, \hat{S}}\|_2 = 1$$
 
-- $r(k, C_S) = (k-1) + kp + k$
-    
-- $r(k, C_D) = (k-1) + kp + kp$
-    
-- $r(k, C_E) = (k-1) + kp + \frac{p(p+1)}{2}$
-    
-- $r(k, C_U) = (k-1) + kp + k \frac{p(p+1)}{2}$
-    
+$\mu_h$는 부분구면 $\{\mu \in S^{d-1} : \mu_{\hat{S}^c} = \mathbf{0}\}$ 위에 있음 ($S^{d_\lambda - 1}$과 isometric, $d_\lambda = |\hat{S}_\lambda|$).
 
-실제 embedding 차원이 크면 $C_U$는 PCA-reduced space에서만 사용하는 것이 안전하다.
+**Density는 원래 sphere의 정규화 상수** $c_d(\kappa_h)$를 사용 (NOT $c_{d_\lambda}$):
 
----
+$$p(\mathbf{z}_i \mid \tilde{\Theta}_{\hat{S}}) = \sum_{h=1}^K \tilde{\pi}_h c_d(\tilde{\kappa}_h) \exp\left(\tilde{\kappa}_h \tilde{\mu}_{h,\hat{S}}^\top \mathbf{z}_{i,\hat{S}}\right)$$
 
-## 10. Summary input rules
+### 4.2 Refit EM
 
-### R1. Hard-thresholded input
+**E-step**:
+$$\tilde{\tau}_{ih} = \frac{\tilde{\pi}_h c_d(\tilde{\kappa}_h) \exp(\tilde{\kappa}_h \tilde{\mu}_{h,\hat{S}}^\top \mathbf{z}_{i,\hat{S}})}{\sum_{\ell=1}^K \tilde{\pi}_\ell c_d(\tilde{\kappa}_\ell) \exp(\tilde{\kappa}_\ell \tilde{\mu}_{\ell,\hat{S}}^\top \mathbf{z}_{i,\hat{S}})}$$
 
-$$ S_j^{(t), HT} = \{d_i : \gamma_{ij}^{(t)} > \tau\}, \quad \tau \in (0,1) $$
+**Resultant**:
+$$\mathbf{r}_{h,\hat{S}} = \sum_{i=1}^n \tilde{\tau}_{ih} \mathbf{z}_{i,\hat{S}}, \quad N_h = \sum_{i=1}^n \tilde{\tau}_{ih}$$
 
-- **해석:** $\tau$ 큼 $\implies$ summary input은 작지만 purity 높음. $\tau$ 작음 $\implies$ summary input은 크지만 heterogeneous할 수 있음.
-    
+**Mean direction**:
+$$\hat{\tilde{\mu}}_{h,\hat{S}} = \frac{\mathbf{r}_{h,\hat{S}}}{\|\mathbf{r}_{h,\hat{S}}\|_2}, \quad \hat{\tilde{\mu}}_{h,\hat{S}^c} = \mathbf{0}$$
 
-### R2. Top-m posterior input
+**Resultant length**:
+$$\bar{R}_{h,\hat{S}} = \frac{\|\mathbf{r}_{h,\hat{S}}\|_2}{N_h}$$
 
-$$ r_j^{(t)} = \text{argsort}_i \{-\gamma_{ij}^{(t)}\} $$
+**Concentration update** (dimension은 $d_\lambda$가 아닌 원래 $d$):
+$$A_d(\hat{\tilde{\kappa}}_h) = \bar{R}_{h,\hat{S}}, \quad \hat{\tilde{\kappa}}_h \approx \frac{d \bar{R}_{h,\hat{S}} - \bar{R}_{h,\hat{S}}^3}{1 - \bar{R}_{h,\hat{S}}^2}$$
 
-$$ S_j^{(t), TopM} = \{d_{r_j^{(t)}(1)}, \dots, d_{r_j^{(t)}(m)}\} $$
+**Mixing weight**:
+$$\hat{\tilde{\pi}}_h = \frac{N_h}{n}$$
 
-이 방식은 LLM context window가 제한된 경우 가장 실용적이다.
+### 4.3 Variant: Selected-Sphere Refit (Practical Only)
 
-### R3. Posterior-weighted diversified sampling
+$$\tilde{\mathbf{z}}_i = \frac{P_{\hat{S}} \mathbf{z}_i}{\|P_{\hat{S}} \mathbf{z}_i\|_2} \in S^{d_\lambda - 1}$$
 
-Top-M candidate pool: $P_j^{(t)} = \{r_j^{(t)}(1), \dots, r_j^{(t)}(M)\}$.
+**Admissibility**: $\min_i \|P_{\hat{S}} \mathbf{z}_i\|_2 > \epsilon_0$ 위배 시 해당 $\lambda$ 제외.
 
-이미 선택된 set을 $Z_{j, r-1}^{(t)}$ 라고 하면,
+이 variant는 $c_{d_\lambda}(\tilde{\kappa}_h)$ 사용. $\lambda$마다 sample space 변경 → BIC 비교는 heuristic.
 
-$$ D_i^2 = \min_{h \in Z_{j, r-1}^{(t)}} \|x_i - x_h\|^2 $$
-
-Stochastic selection:
-
-$$ \text{Pr}(i \text{ selected at step } r) \propto \gamma_{ij}^{(t)} D_i^2, \quad i \in P_j^{(t)} \setminus Z_{j, r-1}^{(t)} $$
-
-이 rule은 posterior responsibility와 diversity를 동시에 반영한다.
+→ **Sensitivity analysis로만 제시**, model selection은 main version으로.
 
 ---
 
-## 11. Monotonicity와 prototype refresh
+## 5. Model Selection: BIC
 
-**Proposition 1. Fixed-prototype 구간의 monotonicity**
+### 5.1 자유도 (Main sparse-submodel 기준)
 
-만약 $t+1 \notin L$ 이면 $c^{(t+1)} = c^{(t)}$.
+$\mu_h$의 자유도는 $d_\lambda - 1$ (부분구면 $S^{d_\lambda - 1}$ 위):
 
-이때 SR-EM은 $c^{(t)}$를 고정한 penalized objective에 대한 EM-type ascent이다.
+**Component-specific $\kappa_h$**:
+$$\nu(K, \lambda) = \underbrace{(K-1)}_{\pi} + \underbrace{K(d_\lambda - 1)}_{\mu_h} + \underbrace{K}_{\kappa_h} = K d_\lambda + K - 1$$
 
-$$ Q_\rho(\theta^{(t+1)}; c^{(t)}) \ge Q_\rho(\theta^{(t)}; c^{(t)}) $$
+**Common $\kappa$**:
+$$\nu_{\text{common}}(K, \lambda) = (K-1) + K(d_\lambda - 1) + 1 = K d_\lambda$$
 
-Prototype refresh가 있을 때는 $c$가 바뀌므로 $Q_\rho(\theta^{(t+1)}; c^{(t+1)}) \ge Q_\rho(\theta^{(t)}; c^{(t)})$를 일반적으로 주장하면 안 된다.
+### 5.2 BIC
 
-> 검증 보고서에서는 refresh 사이 31개 non-refresh iteration에서 monotonicity violation이 0개로 보고되었다.
+$$\text{BIC}(K, \lambda) = -2 \ell_n(\hat{\tilde{\Theta}}_{K,\lambda}^{\text{submodel-refit}}) + \nu(K, \lambda) \log n$$
 
-**Proposition 2. Prototype refresh perturbation bound**
+**Refit log-likelihood** (원래 sphere 위에서):
+$$\ell_n(\hat{\tilde{\Theta}}) = \sum_{i=1}^n \log \left[\sum_{h=1}^K \hat{\tilde{\pi}}_h c_d(\hat{\tilde{\kappa}}_h) \exp\left(\hat{\tilde{\kappa}}_h \hat{\tilde{\mu}}_{h,\hat{S}}^\top \mathbf{z}_{i,\hat{S}}\right)\right]$$
 
-Prototype refresh에서 $c_j^+ = c_j + \delta_j$ 라고 하자. 고정된 $\theta$에 대해, $Q_\rho(\theta; c^+) - Q_\rho(\theta; c)$의 변화는 penalty 부분에서만 발생한다. Bound는
+### 5.3 톤 조정
 
-$$ |Q_\rho(\theta; c^+) - Q_\rho(\theta; c)| \le \frac{\rho}{2} \sum_{j=1}^k \|\Sigma_j^{-1}\|_{\text{op}} \|\delta_j\| [2\|\mu_j - c_j\| + \|\delta_j\|] $$
-
-따라서 refresh-time dip은 $\rho$, $\|\delta_j\|$, $\|\Sigma_j^{-1}\|_{\text{op}}$, $|\mu_j - c_j|$에 의해 제어된다.
-
-> 검증 보고서에서는 summarizer noise와 refresh-time dip 사이 상관이 $\text{corr}(\text{noise}, \text{dip}) = 0.97$로 보고되었다.
-
----
-
-## 12. 모형 선택
-
-### 12.1 $k$와 covariance family 선택
-
-고정된 $\rho$에서 $(k, C)$는 BIC 또는 ICL로 선택한다.
-
-$$ \text{BIC}(k, C \mid \rho) = -2\ell_n(\hat{\theta}_{k, C, \rho}) + r(k, C) \log n $$
-
-ICL은 posterior uncertainty를 추가로 penalize한다.
-
-$$ \text{Ent} = -\sum_{i=1}^n \sum_{j=1}^k \gamma_{ij} \log \gamma_{ij} $$
-
-$$ \text{ICL} = \text{BIC} + 2\text{Ent} $$
-
-### 12.2 $\rho$ 선택
-
-**$\rho$는 BIC로 직접 선택하지 않는 것이 좋다.**
-
-- **이유:** 고정된 $(k, C)$에서 $\rho = 0$은 unpenalized likelihood MLE이다. 따라서 unpenalized likelihood 기반 BIC로 $\rho$까지 선택하면 원칙적으로 $\rho = 0$이 우세하다.
-    
-
-따라서 권장 방식은 다음이다.
-
-- **방법 1. Validation log-likelihood:** $\hat{\rho} = \arg\max_{\rho \in \mathbb{R}} \ell_{\text{val}}(\hat{\theta}_\rho)$. 단, well-specified Gaussian synthetic data에서는 validation likelihood도 $\rho=0$ 또는 작은 $\rho$를 선호할 수 있다.
-    
-- **방법 2. Sensitivity analysis:** $\rho = \kappa \bar{N}$, $\bar{N} = \frac{n}{k}$, $\kappa \in \{0, 0.1, 0.3, 1, 3, \infty\}$. 현재 단계에서는 이 방식이 가장 정직하다.
-    
+- BIC/ICL은 **practical model selection criterion**
+- 고차원 random model collection에 대한 이론적 정당화 (slope heuristic 등)는 future work
+- Main version은 모든 $\lambda$ 모델이 $S^{d-1}$ 위에서 정의되므로 **nested likelihood 비교가 정당화됨** (selected-sphere variant 대비 강점)
 
 ---
 
-## 13. 수치 검증 결과 요약
+## 6. Stability Selection (Meinshausen–Bühlmann)
 
-현재 검증 결과는 크게 두 부류다.
+Subsampling 또는 bootstrap 반복 $b = 1, \ldots, B$:
 
-### 13.1 수학적 정합성
+$$\hat{\Pi}_j = \frac{1}{B} \sum_{b=1}^B \mathbf{1}\{j \in \hat{S}_\lambda^{(b)}\}$$
 
-- $\mu$ closed-form update: **PASS**
-    
-- $\Sigma$ closed-form update: **PASS**
-    
-- $\rho = 0 \implies$ standard GMM과 일치
-    
-- $\rho \to \infty \implies \mu \to c$
-    
-- non-refresh 구간 monotonicity: **PASS**
-    
-- refresh perturbation bound 방향성: **PASS**
-    
+**Stable support**:
+$$\hat{S}_{\text{stable}} = \{j : \hat{\Pi}_j \geq \pi_{\text{thr}}\}, \quad \pi_{\text{thr}} \in [0.6, 0.9]$$
 
-검증 보고서상 $\mu$ closed-form은 수치 최적화와 $2.31 \times 10^{-7}$, $\Sigma$ closed-form은 $1.38 \times 10^{-8}$ 수준의 차이로 일치했고, $\rho = 0$은 sklearn GMM과 **0.6%** 이내로 일치했다.
-
-### 13.2 합성 실험 결과
-
-- **중간 난이도 setting:** $n=600, p=20, k=4, \text{sep}=3.0$
-    
-    - sklearn GMM: mean ARI = 0.425
-        
-    - SR-EM $\kappa=1.0$: mean ARI = 0.466
-        
-    - gain = +0.040, $p=0.094$
-        
-- **고차원 setting:** $p=50$
-    
-    - sklearn = 0.179, SR-EM $\kappa=3.0$ = 0.227
-        
-    - gain = +0.048, $p=0.099$
-        
-- **약한 분리 setting:** $\text{sep}=2.0$
-    
-    - sklearn = 0.233, SR-EM $\kappa=3.0$ = 0.234 (거의 개선 없음)
-        
-- Summarizer noise가 큰 경우에는 SR-EM $\kappa=0.3$가 +0.056 ($p=0.043$)의 gain을 보여, 현재까지 가장 의미 있는 개선 사례다.
-    
+Meinshausen–Bühlmann의 framework는 finite-sample false selection control도 제공 → 단순 heuristic 이상의 정당성.
 
 ---
 
-## 14. 현재 결과의 해석
+## 7. 해석가능성
 
-**강하게 주장 가능한 점:**
+| 도구 | 내용 | 강도 |
+|---|---|---|
+| $\hat{\kappa}_h$ | cluster thematic tightness | **강함** |
+| Cluster 대표 문서 | $\hat{\tilde{\mu}}_h$에 nearest top-k 문서 | **강함** |
+| Cluster summary | 대표 문서로부터 키워드/요약 | 중간 |
+| Active set $\hat{S}_\lambda$ | dimension screening 결과 | **해석 불가** |
 
-- SR-GMM은 standard GMM과 summary-replacement clustering을 잇는 one-parameter family다.
-    
-- SR-EM은 closed-form M-step을 가지며, fixed prototype 구간에서 monotone ascent를 가진다.
-    
-- 중간 $\rho$는 data-driven mean과 summary prototype의 절충을 제공한다.
-    
+### 7.1 명시 문장
 
-**조심해야 할 점:**
+> 선택된 dense embedding 좌표 자체는 의미적으로 해석되지 않으며, **regularization 및 dimension screening 결과**일 뿐이다. 군집 해석은 $\kappa_h$, 대표 문서, cluster summary로 제공한다.
 
-- 현재 합성 실험에서 ARI gain은 작고 상황 의존적이다.
-    
-- 따라서 지금 단계에서 “항상 clustering accuracy를 향상시킨다”고 주장하면 안 된다.
-    
+### 7.2 편향에 대한 표현
 
-**더 적절한 주장:**
+- "refit은 LASSO penalty에 의한 shrinkage bias를 완화한다"
+- "refit은 unbiased estimator를 제공한다"
 
-> SR-GMM은 well-specified Gaussian data에서 보편적 성능 향상을 목표로 하기보다, misspecified text-embedding clustering에서 semantic prototype을 확률적 혼합모형 안에 안정적으로 통합하는 방법이다.
-
-검증 보고서에서도 합성 실험만으로는 부족하며, Bank77, CLINC, GoEmo, MASSIVE 같은 실제 text benchmark에서 BERT/e5 embedding과 실제 LLM summarizer를 사용한 실험이 필수라고 정리되어 있다.
+(support가 random이고 selection error가 있어 전체 unbiased는 주장 불가)
 
 ---
 
-## 15. 연구미팅용 최종 알고리즘 요약
+## 8. 통계적 기여
 
-**Algorithm: SR-EM**
+### 8.1 강하게 주장 (첫 논문 핵심)
 
-**Input:** $\{d_i\}_{i=1}^n$, $\{x_i = \phi(d_i)\}_{i=1}^n$, $k, \rho, L, f$
+1. **Meynet식 Lasso-MLE 원칙을 sparse directional mixture로 확장**
+2. **원래 sphere 위의 sparse-vMF submodel refit 정식화** — $(K, \lambda)$ 모델이 공통 sample space에서 정의되어 nested likelihood 비교 가능
+3. **Cluster-contrast penalty의 두 형태 비교** ($\mu$ vs. $\eta$); Option B가 component별 $\kappa_h$ 차이를 반영하므로 더 자연스러움
+4. **Stability selection + BIC/ICL 결합 model selection 절차**
 
-**Initialize:** $\theta^{(0)} = (\pi^{(0)}, \mu^{(0)}, \Sigma^{(0)})$, $c^{(0)}$
+### 8.2 Future Target
 
-For $t = 0, 1, \dots, T-1$:
-
-**Step 1. E-step**
-
-$$ \gamma_{ij}^{(t)} = \frac{\pi_j^{(t)} \varphi(x_i; \mu_j^{(t)}, \Sigma_j^{(t)})}{\sum_{\ell=1}^k \pi_\ell^{(t)} \varphi(x_i; \mu_\ell^{(t)}, \Sigma_\ell^{(t)})} $$
-
-$$ N_j^{(t)} = \sum_{i} \gamma_{ij}^{(t)}, \quad \bar{x}_j^{(t)} = \frac{1}{N_j^{(t)}} \sum_{i} \gamma_{ij}^{(t)} x_i $$
-
-**Step 2. Prototype refresh**
-
-If $t+1 \in L$, then
-
-$$ s_j^{(t)} = f(S_j^{(t)}), \quad c_j^{(t+1)} = \phi(s_j^{(t)}) $$
-
-Otherwise,
-
-$$ c_j^{(t+1)} = c_j^{(t)} $$
-
-**Step 3. Mean update**
-
-$$ \mu_j^{(t+1)} = \frac{N_j^{(t)} \bar{x}_j^{(t)} + \rho c_j^{(t+1)}}{N_j^{(t)} + \rho} $$
-
-**Step 4. Covariance update**
-
-$$ \Sigma_j^{(t+1)} = \frac{1}{N_j^{(t)}} \left[ \sum_{i} \gamma_{ij}^{(t)} (x_i - \mu_j^{(t+1)})(x_i - \mu_j^{(t+1)})^\top + \rho(\mu_j^{(t+1)} - c_j^{(t+1)})(\mu_j^{(t+1)} - c_j^{(t+1)})^\top \right] $$
-
-**Step 5. Mixing weight update**
-
-$$ \pi_j^{(t+1)} = \frac{N_j^{(t)}}{n} $$
-
-_Convergence는 prototype refresh 직후가 아니라 non-refresh iteration에서 평가한다._
+- Penalized EM monotone ascent
+- Selection consistency (vMF Bessel 함수, label switching, unit norm 제약)
+- Random model collection 하의 BIC 이론적 정당화 (slope heuristic)
 
 ---
 
-## 16. 발표용 한 문장
+## 9. 실험 계획
 
-> 기존 summary-as-centroid 방법은 k-means의 centroid를 summary embedding으로 대체하지만, 본 연구는 summary embedding을 GMM component mean에 대한 Mahalanobis regularizer로 사용한다. 그 결과 $\rho=0$에서는 standard GMM, $\rho \to \infty$에서는 summary-replacement GMM analogue, 중간 $\rho$에서는 data-driven mean과 semantic prototype의 절충 추정량을 얻는다. 핵심 수식은 $\mu_j^{\text{new}} = (N_j \bar{x}_j + \rho c_j) / (N_j + \rho)$이며, 이 closed-form update가 본 방법의 가장 중요한 통계적 장점이다.
+### 9.1 시뮬레이션
+
+- Active set $S^*$ 회복률 (precision, recall, $F_1$)
+- 군집화 정확도 (ARI, NMI)
+- $\kappa_h$ 추정 정확도
+- 변동 요인: $(d, n, K, |S^*|, \kappa^*)$, cluster 분리도
+
+### 9.2 실데이터
+
+- 텍스트 임베딩 2–3종 (Sentence-BERT, E5)
+- 다양한 도메인 (뉴스, 리뷰, 학술 abstract 등)
+
+### 9.3 핵심 검증 — **네 가지 모두 나와야 논문 성립**
+
+1. **LASSO-vMF + sparse-submodel refit > LASSO-vMF** (refit 효과)
+2. **LASSO-vMF + sparse-submodel refit > LASSO-GMM + refit** (vMF geometry 효과)
+3. **LASSO-vMF + sparse-submodel refit > dense vMF + threshold + refit** (LASSO path의 필요성)
+4. **$\hat{S}_\lambda$가 bootstrap/subsampling에서 안정적** ($\hat{\Pi}_j$ 분포로 검증)
+
+### 9.4 전체 Baseline
+
+- spherical k-means
+- movMF (Banerjee, dense)
+- sparse k-means (Witten–Tibshirani)
+- Lasso-GMM + refit (Meynet)
+- dense vMF + threshold + refit
+- 기존 sparse vMF mixture (Rossi & Barbaro 등)
+- BERTopic
+- (옵션) DEC
+
+### 9.5 Ablation
+
+- Penalty 형태: Option A ($\mu$) vs. Option B ($\eta$)
+- Refit 형태: sparse-submodel (main) vs. selected-sphere (variant)
+- Refit 유무
+- $\lambda$ 선택: BIC vs. ICL vs. CV
+- Stability selection 임계값 $\pi_{\text{thr}}$
+- Penalty weight $w_h$ 선택 ($\pi_h^{(t)}$ vs. uniform vs. $N_h^{(t)}/n$)
 
 ---
 
-## 17. 다음 단계
+## 10. 방법론 위치
 
-현재 연구미팅에서 결론은 다음처럼 제시하면 좋습니다.
+| Method | Probabilistic model | Directional likelihood | Variable selection | $\kappa_h$ estimation | Two-stage refit |
+|---|:---:|:---:|:---:|:---:|:---:|
+| spherical k-means | ✗ | ✗ | ✗ | ✗ | – |
+| movMF (Banerjee) | ✓ | ✓ | ✗ | ✓ | – |
+| sparse k-means (W–T) | ✗ | ✗ | ✓ | ✗ | ✗ |
+| Lasso-GMM + refit (Meynet) | ✓ | ✗ | ✓ | ✗ | ✓ |
+| Sparse vMF (existing) | ✓ | ✓ | ✓ | ✓ | ✗ |
+| **Proposed** | ✓ | ✓ | ✓ | ✓ | ✓ |
 
-1. 방법론 수식은 정리되었고, closed-form update는 수치적으로 검증되었다.
-    
-2. 합성 Gaussian data에서는 gain이 작고 상황 의존적이다.
-    
-3. 따라서 논문의 승부는 실제 text embedding benchmark에서 intermediate $\rho$가 얼마나 효과적인지에 달려 있다.
-    
+---
 
-**실험 계획 요약:**
+## 11. 미해결 / 미팅 논의 항목
 
-- **필수 real-data benchmark:** Bank77, CLINC, GoEmo, MASSIVE.
-    
-- **비교군:** k-means, GMM, k-NLPmeans, k-LLMmeans, BERTopic, SR-GMM.
-    
-- **평가지표:** ACC, NMI, ARI, LLM call cost, interpretability of summaries.
-    
+1. **Option A vs. Option B 최종 결정** — Option B 권장
+2. **M-step의 정확한 형태** — ECM / MM / proximal-gradient 중 선택
+3. **Penalty weight $w_h$ 처리** — $\pi_h^{(t)}$ 고정 vs. uniform vs. $N_h/n$
+4. **Sparse-submodel refit EM의 정확한 derivation** — 부분구면 위에서의 update
+5. **$\lambda_n$ scaling 최종 결정** — $\ell_n - n\lambda_n P$ vs. $\frac{1}{n}\ell_n - \lambda_n P$
+6. **Hyperparameter 설정** — $\kappa_{\max}, N_{\min}, \epsilon_0, \pi_{\text{thr}}$
+7. **$K$ 결정** — BIC 그리드 vs. nested model selection
 
-> **참고:** 기존 Summaries as Centroids도 Bank77, CLINC, GoEmo, MASSIVE 등을 사용하고, k-means, GMM, BERTopic, ClusterLLM, LLMEdgeRefine 등과 비교했기 때문에, 이 benchmark 구성을 그대로 따라가는 것이 논문 설득력에 가장 좋다.
+---
+
+## 12. 핵심 기여 문장
+
+### 12.1 한국어
+
+> 본 연구는 L2 정규화된 텍스트 임베딩을 초구면 위의 방향성 자료로 보고, vMF 혼합모형의 자연모수 $\eta_h = \kappa_h \mu_h$에 cluster-contrast sparsity penalty를 결합하여 군집 판별에 필요한 좌표 집합을 screening한다. 이후 **원래 sphere $S^{d-1}$ 위에서 비활성 좌표의 mean-direction 성분을 0으로 강제한 sparse-vMF submodel**로 unpenalized refit을 수행하여 LASSO shrinkage에 따른 방향 추정 편향을 완화한다. 이 정식화는 모든 $\lambda$ 모델이 공통 sample space 위에 정의되도록 하여 BIC/ICL을 통한 nested likelihood 비교를 가능하게 한다. 선택된 좌표 자체는 의미적으로 해석하지 않으며, 군집 해석은 $\kappa_h$, 대표 문서, cluster summary로 제공한다.
+
+### 12.2 영문 (Contribution Statement)
+
+> We extend the Lasso-MLE principle of Meynet (2013) to sparse directional mixtures by combining an $L_1$-penalized vMF mixture (with cluster-contrast penalty on the natural parameter $\eta_h = \kappa_h \mu_h$) for support selection with an **unpenalized sparse-vMF submodel refit on the original sphere $S^{d-1}$**, where mean-direction components on the inactive coordinates are constrained to zero. This preserves a common sample space across regularization paths, enabling principled BIC/ICL-based model selection.
+
+---
+
+## 13. 다음 단계
+
+1. **Sparse-submodel refit EM의 정확한 M-step derivation** (부분구면 위에서)
+2. **Stage 1 Option B의 generalized EM 구현 방식 결정** (ECM/MM/proximal)
+3. **Toy simulation** ($d = 50, n = 500, K = 3, |S^*| = 10$) — 작동 검증부터
+4. **실데이터 적용 전 pilot study**
+
+---
+
+## 발표 시 강조할 세 가지
+
+1. **Main refit은 selected-sphere가 아니라 original sphere $S^{d-1}$ 위의 sparse-submodel refit**
+2. **Option B (natural parameter penalty)를 main으로** — $\eta_h = \kappa_h \mu_h$가 log-density의 실제 선형 판별항
+3. **Active set은 semantic interpretation이 아님** — 해석은 $\kappa_h$, 대표 문서, cluster summary로 제공
